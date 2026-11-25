@@ -56,6 +56,27 @@ Attach files to the message.
 $ opencode run --file src/server.ts --file src/client.ts "Review these for bugs"
 ```
 
+Require a JSON answer that matches a JSON Schema.
+
+```bash
+$ opencode run --output-schema ./schemas/review.json "Review src/server.ts"
+```
+
+The schema's root must be an object (`"type": "object"`), in draft-07 or 2020-12. The agent returns its answer by calling a
+`structured_output` tool whose arguments are validated against your schema. If the call is rejected, or the agent replies
+in plain text instead, OpenCode sends the validation errors back and the agent corrects itself. When an answer is accepted
+the turn ends and the validated JSON is printed. With `--format json` it is emitted as an `output` event instead.
+
+The agent gets two corrections by default. Change that with `--output-retries`; `0` allows none. If the answer is still
+not valid after the last correction, the run fails with a `structured-output` error and a non-zero exit code.
+
+```bash
+$ opencode run --output-schema ./schemas/review.json --output-retries 4 "Review src/server.ts"
+```
+
+Programmatic callers pass the same thing as `output: { schema, retries }` on a prompt. The accepted answer is the input of
+the completed `structured_output` tool call in the assistant message.
+
 Run with a specific agent.
 
 ```bash

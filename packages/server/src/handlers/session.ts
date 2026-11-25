@@ -298,6 +298,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                 files: ctx.payload.files,
                 agents: ctx.payload.agents,
                 skills: ctx.payload.skills,
+                output: ctx.payload.output,
                 metadata: ctx.payload.metadata,
                 delivery: ctx.payload.delivery,
                 resume: ctx.payload.resume,
@@ -317,6 +318,9 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                 ),
                 Effect.catchTag("Session.SkillNotFoundError", (error) =>
                   Effect.fail(new InvalidRequestError({ message: `Skill not found: ${error.skill}`, field: "skills" })),
+                ),
+                Effect.catchTag("Session.OutputSchemaError", (error) =>
+                  Effect.fail(new InvalidRequestError({ message: error.message, field: "output" })),
                 ),
                 locationErrors,
               ),

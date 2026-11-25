@@ -93,6 +93,8 @@ export type SkillID = string
 
 export type SkillName = string
 
+export type PromptOutput = { schema: { [x: string]: JsonValue }; retries?: number }
+
 export type SessionInboxDelivery = "steer" | "queue"
 
 export type SessionInboxSyntheticPayload = { text: string; description?: string; metadata?: { [x: string]: JsonValue } }
@@ -165,6 +167,8 @@ export type WorkspaceID = string
 export type InstructionKey = string
 
 export type InstructionHash = string
+
+export type PromptOutput1 = { schema: { [x: string]: any }; retries?: number }
 
 export type SessionInboxSyntheticPayload1 = { text: string; description?: string; metadata?: { [x: string]: any } }
 
@@ -1188,6 +1192,7 @@ export type SessionInboxUserPayload = {
   files?: Array<PromptFileAttachment>
   agents?: Array<PromptAgentAttachment>
   skills?: Array<PromptSkillAttachment>
+  output?: PromptOutput
   metadata?: { [x: string]: JsonValue }
 }
 
@@ -1199,6 +1204,7 @@ export type SessionMessageUser = {
   files?: Array<PromptFileAttachment>
   agents?: Array<PromptAgentAttachment>
   skills?: Array<PromptSkillAttachment>
+  output?: PromptOutput
   type: "user"
 }
 
@@ -1207,6 +1213,7 @@ export type SessionInboxUserPayload1 = {
   files?: Array<PromptFileAttachment>
   agents?: Array<PromptAgentAttachment>
   skills?: Array<PromptSkillAttachment>
+  output?: PromptOutput1
   metadata?: { [x: string]: any }
 }
 
@@ -3579,6 +3586,7 @@ export type SessionPromptInput = {
         readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
       }>
     | undefined
+  readonly output?: { readonly schema: { readonly [x: string]: JsonValue }; readonly retries?: number } | undefined
   readonly metadata?: { readonly [x: string]: JsonValue } | undefined
   readonly delivery?: ("steer" | "queue") | null | undefined
   readonly resume?: boolean | null | undefined
@@ -3611,6 +3619,7 @@ export type SessionCommandInput = {
         readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
       }>
     | undefined
+  readonly output?: { readonly schema: { readonly [x: string]: JsonValue }; readonly retries?: number } | undefined
   readonly delivery?: ("steer" | "queue") | null | undefined
 }
 

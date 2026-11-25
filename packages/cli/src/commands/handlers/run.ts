@@ -28,6 +28,8 @@ export default Runtime.handler(Commands.commands.run, (input) =>
           agent: Option.getOrUndefined(input.agent),
           format: input.format,
           file: [...input.file],
+          outputSchema: Option.getOrUndefined(input.outputSchema),
+          outputRetries: Option.getOrUndefined(input.outputRetries),
           title: Option.getOrUndefined(input.title),
           archived: input.archived,
           thinking: input.thinking,

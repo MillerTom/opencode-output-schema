@@ -15,8 +15,10 @@ import { Mime } from "../mime.js"
 import { Plugin } from "../plugin/service.js"
 import { PluginHooks } from "../plugin/hooks.js"
 import { Skill } from "../skill.js"
+import { codecFor } from "../tool/runtime.js"
+import { SessionStructuredOutput } from "./structured-output.js"
 import { SessionBlob } from "./blob.js"
-import { AttachmentError, SkillNotFoundError } from "./error.js"
+import { AttachmentError, OutputSchemaError, SkillNotFoundError } from "./error.js"
 import { SessionStored } from "./stored.js"
 
 // Image types the resizer can decode; others such as HEIC and AVIF go to the provider unchanged.
@@ -27,6 +29,7 @@ export type Input = {
   files?: PromptInput.Prompt["files"]
   agents?: PromptInput.Prompt["agents"]
   skills?: PromptInput.Prompt["skills"]
+  output?: PromptInput.Prompt["output"]
   metadata?: Record<string, unknown>
   delivery?: SessionInbox.Delivery
 }
@@ -52,9 +55,15 @@ export const prepare = Effect.fn("SessionPrompt.prepare")(function* (request: {
     delivery: request.input.delivery ?? "steer",
   })
   const input = event.prompt
-  const files = input.files
-    ? yield* Effect.forEach(input.files, materializeAttachment, { concurrency: 8 })
-    : undefined
+  // Reject a schema that cannot validate anything here, rather than after the agent has started work on it.
+  // The output contract is not part of the hook's prompt, so a plugin cannot rewrite what the caller asked for.
+  const output = request.input.output
+  const invalid =
+    output &&
+    (SessionStructuredOutput.unsupported(output.schema) ??
+      (codecFor(output.schema) ? undefined : "output.schema is not a valid JSON Schema"))
+  if (invalid) return yield* new OutputSchemaError({ message: invalid })
+  const files = input.files ? yield* Effect.forEach(input.files, materializeAttachment, { concurrency: 8 }) : undefined
   const requested = input.skills
   const selected = yield* Effect.gen(function* () {
     if (!requested?.length) return undefined
@@ -84,6 +93,7 @@ export const prepare = Effect.fn("SessionPrompt.prepare")(function* (request: {
       agents: input.agents,
       files,
       skills: selected?.length ? selected : undefined,
+      output,
       metadata: event.metadata,
     }),
     delivery: event.delivery,

@@ -3,6 +3,7 @@ import {
   ClientError,
   OpenCode,
   type EventSubscribeOutput,
+  type JsonValue,
   type ExperimentalJobListOutput,
   type SessionActiveOutput,
   type SessionInboxListOutput,
@@ -269,6 +270,8 @@ async function run(input: {
   active?: () => SessionActiveOutput
   terminalDelay?: number
   signal?: AbortSignal
+  output?: { schema: Record<string, JsonValue>; retries?: number }
+  onPrompt?: (request: { output?: unknown }) => void
 }) {
   const sdk = OpenCode.make({ baseUrl: "https://opencode.test" })
   const values: V2Event[] = [{ id: "evt_connected", type: "server.connected", data: {} }]
@@ -324,6 +327,7 @@ async function run(input: {
   )
   spyOn(sdk.session, "prompt").mockImplementation((request) => {
     const messageID = request.id ?? "msg_prompt"
+    input.onPrompt?.(request)
     promptID = messageID
     values.push(...input.turn(messageID))
     wake?.()
@@ -336,6 +340,7 @@ async function run(input: {
     location,
     message: "hello",
     files: [],
+    output: input.output,
     thinking: false,
     format: input.format ?? "default",
     auto: false,
@@ -497,6 +502,109 @@ describe("runNonInteractivePrompt", () => {
       settled(),
     ])
     expect(seen.filter((event) => event.type === "step_finish")).toHaveLength(1)
+  })
+
+  describe("structured output", () => {
+    const output = { schema: { type: "object", properties: { answer: { type: "string" } } }, retries: 1 }
+    const accepted = (messageID: string): SessionMessageInfo[] => [
+      idleMessage("succeeded"),
+      {
+        id: "msg_assistant",
+        type: "assistant",
+        agent: "build",
+        model: { providerID: "test", id: "test-model" },
+        content: [
+          {
+            type: "tool",
+            id: "call_bad",
+            name: "structured_output",
+            state: { status: "error", input: { answer: 42 }, error: { type: "tool", message: "Invalid arguments" } },
+            time: { created: 2, completed: 2 },
+          },
+          {
+            type: "tool",
+            id: "call_good",
+            name: "structured_output",
+            state: {
+              status: "completed",
+              input: { answer: "42" },
+              content: [{ type: "text", text: "Answer accepted." }],
+            },
+            time: { created: 3, completed: 3 },
+          },
+        ],
+        finish: "tool-calls",
+        time: { created: 2, completed: 3 },
+      },
+      { id: messageID, type: "user", text: "hello", time: { created: 1 } },
+    ]
+
+    test("sends the schema with the prompt and prints the accepted answer", async () => {
+      const prompts: unknown[] = []
+      const result = await capture({
+        output,
+        onPrompt: (request) => prompts.push(request.output),
+        turn: (messageID) => [prompted(messageID), settled()],
+        messages: accepted,
+      })
+
+      expect(prompts).toEqual([output])
+      expect(JSON.parse(result.stdout.slice(result.stdout.indexOf("{")))).toEqual({ answer: "42" })
+      expect(result.exitCode).toBe(0)
+    })
+
+    test("emits the accepted answer as an output event in JSON format", async () => {
+      const result = await capture({
+        format: "json",
+        output,
+        turn: (messageID) => [prompted(messageID), settled()],
+        messages: accepted,
+      })
+
+      expect(jsonLines(result.stdout).filter((event) => event.type === "output")).toMatchObject([
+        { type: "output", sessionID: "ses_1", output: { answer: "42" } },
+      ])
+      expect(result.exitCode).toBe(0)
+    })
+
+    test("only the last accepted call is printed, and failed calls are not", async () => {
+      const result = await capture({
+        format: "json",
+        output,
+        turn: (messageID) => [prompted(messageID), settled()],
+        messages: accepted,
+      })
+
+      expect(jsonLines(result.stdout).filter((event) => event.type === "output")).toHaveLength(1)
+    })
+
+    test("fails when the run succeeds without an accepted answer", async () => {
+      const result = await capture({
+        format: "json",
+        output,
+        turn: (messageID) => [prompted(messageID), settled()],
+        messages: (messageID) => [
+          idleMessage("succeeded"),
+          { id: messageID, type: "user", text: "hello", time: { created: 1 } },
+        ],
+      })
+
+      expect(jsonLines(result.stdout)).toMatchObject([{ type: "error", error: { type: "structured-output" } }])
+      expect(result.exitCode).toBe(1)
+    })
+
+    test("prints nothing extra and sends no output when no schema was requested", async () => {
+      const prompts: unknown[] = []
+      const result = await capture({
+        format: "json",
+        onPrompt: (request) => prompts.push(request.output),
+        turn: (messageID) => [prompted(messageID), settled()],
+        messages: accepted,
+      })
+
+      expect(prompts).toEqual([undefined])
+      expect(jsonLines(result.stdout).filter((event) => event.type === "output")).toEqual([])
+    })
   })
 
   test("reports an observed execution failure before prompt promotion", async () => {

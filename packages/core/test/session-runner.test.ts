@@ -45,6 +45,8 @@ import { SessionInbox } from "@opencode/core/session/inbox"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionModelTransport } from "@opencode/core/session/model-transport"
 import { Money } from "@opencode/schema/money"
+import type { PromptInput } from "@opencode/schema/prompt-input"
+import { SessionStructuredOutput } from "@opencode/core/session/structured-output"
 import { SessionProjector } from "@opencode/core/session/projector"
 import { SessionExecution } from "@opencode/core/session/execution"
 import { SessionRunCoordinator } from "@opencode/core/session/run-coordinator"
@@ -616,7 +618,8 @@ const setup = Effect.gen(function* () {
   const session = yield* Session.Service
   const llm = yield* TestLLM.Test
   const requests = yield* LLMRequests
-  const admit = (text: string) => session.prompt({ sessionID, text, resume: false })
+  const admit = (text: string, output?: PromptInput.Prompt["output"]) =>
+    session.prompt({ sessionID, text, output, resume: false })
   const resume = session.resume(sessionID)
   return Object.assign(state, {
     db,
@@ -630,8 +633,8 @@ const setup = Effect.gen(function* () {
     context: session.context(sessionID),
     messages: session.messages({ sessionID }),
     inbox: session.inbox(sessionID),
-    runPrompt: Effect.fnUntraced(function* (text: string) {
-      const message = yield* admit(text)
+    runPrompt: Effect.fnUntraced(function* (text: string, output?: PromptInput.Prompt["output"]) {
+      const message = yield* admit(text, output)
       yield* resume
       return message
     }),
@@ -2124,7 +2127,9 @@ describe("SessionRunnerLLM", () => {
     })
     const select = (s: Scenario, agent: Agent.ID) => s.session.switchAgent({ sessionID, agent })
     const texts = (request: LLMRequest) =>
-      request.messages.flatMap((message) => message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])))
+      request.messages.flatMap((message) =>
+        message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])),
+      )
     const prompt = (request: LLMRequest | undefined) => request?.system.map((part) => part.text).join("\n") ?? ""
 
     scenario("puts a starting agent's instructions in the system prompt", function* (s) {
@@ -6670,6 +6675,104 @@ describe("SessionRunnerLLM", () => {
       expect(yield* recordedEventTypes(sessionID)).not.toContain("session.retry.scheduled.1")
     })
   }
+
+  describe("structured output", () => {
+    const output = { schema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } }
+    const answered = (messages: ReadonlyArray<SessionMessage.Info>) =>
+      messages.flatMap((message) =>
+        message.type === "assistant"
+          ? message.content.flatMap((part) =>
+              part.type === "tool" && part.name === SessionStructuredOutput.NAME ? [part.state] : [],
+            )
+          : [],
+      )
+
+    scenario("offers the tool for the turn and ends once a valid answer is accepted", function* (s) {
+      yield* s.llm.push(TestLLM.toolCall("call-answer", SessionStructuredOutput.NAME, { answer: "42" }), [])
+
+      yield* s.runPrompt("What is the answer?", output)
+
+      // The accepted call ends the turn, so the model is not asked again.
+      expect(s.requests).toHaveLength(1)
+      expect(s.requests[0]?.tools.map((tool) => tool.name)).toContain(SessionStructuredOutput.NAME)
+      expect(s.requests[0]?.system.map((part) => part.text).join("\n")).toContain(SessionStructuredOutput.INSTRUCTIONS)
+      expect(answered(yield* s.context)).toMatchObject([{ status: "completed", input: { answer: "42" } }])
+    })
+
+    scenario("does not offer the tool to turns that did not ask for output", function* (s) {
+      yield* s.llm.push(TestLLM.text("Plain", "plain"))
+
+      yield* s.runPrompt("Just chat")
+
+      expect(s.requests[0]?.tools.map((tool) => tool.name)).not.toContain(SessionStructuredOutput.NAME)
+      expect(s.requests[0]?.system.map((part) => part.text).join("\n")).not.toContain(SessionStructuredOutput.NAME)
+    })
+
+    scenario("sends validation errors back and accepts the corrected answer", function* (s) {
+      yield* s.llm.push(
+        TestLLM.toolCall("call-bad", SessionStructuredOutput.NAME, { answer: 42 }),
+        TestLLM.toolCall("call-good", SessionStructuredOutput.NAME, { answer: "42" }),
+      )
+
+      yield* s.runPrompt("What is the answer?", output)
+
+      expect(s.requests).toHaveLength(2)
+      expect(JSON.stringify(s.requests[1]?.messages)).toContain("Invalid arguments for tool")
+      expect(answered(yield* s.context)).toMatchObject([
+        { status: "error" },
+        { status: "completed", input: { answer: "42" } },
+      ])
+    })
+
+    scenario("reminds the agent when it answers in plain text", function* (s) {
+      yield* s.llm.push(
+        TestLLM.text("It is 42", "plain-answer"),
+        TestLLM.toolCall("call-answer", SessionStructuredOutput.NAME, { answer: "42" }),
+      )
+
+      yield* s.runPrompt("What is the answer?", output)
+
+      expect(s.requests).toHaveLength(2)
+      expect(s.requests[1]?.messages.at(-1)).toMatchObject({
+        role: "user",
+        content: [{ type: "text", text: SessionStructuredOutput.REMINDER }],
+      })
+      expect((yield* s.context).filter((message) => message.type === "synthetic")).toMatchObject([
+        { text: SessionStructuredOutput.REMINDER, metadata: SessionStructuredOutput.REMINDER_METADATA },
+      ])
+      expect(answered(yield* s.context)).toMatchObject([{ status: "completed", input: { answer: "42" } }])
+    })
+
+    scenario("fails the turn once the corrections are used up", function* (s) {
+      yield* s.llm.push(
+        TestLLM.text("one", "plain-one"),
+        TestLLM.text("two", "plain-two"),
+        TestLLM.text("three", "plain-three"),
+      )
+
+      const failure = yield* s.runPrompt("What is the answer?", { ...output, retries: 1 }).pipe(Effect.flip)
+
+      expect(failure).toMatchObject({ error: { type: "structured-output" } })
+      // One correction was allowed, so the agent had two tries.
+      expect(s.requests).toHaveLength(2)
+    })
+
+    scenario("allows no corrections when retries is 0", function* (s) {
+      yield* s.llm.push(TestLLM.toolCall("call-bad", SessionStructuredOutput.NAME, { answer: 42 }), [])
+
+      const failure = yield* s.runPrompt("What is the answer?", { ...output, retries: 0 }).pipe(Effect.flip)
+
+      expect(failure).toMatchObject({ error: { type: "structured-output" } })
+      expect(s.requests).toHaveLength(1)
+    })
+
+    scenario("rejects a schema whose root is not an object when the prompt is admitted", function* (s) {
+      const failure = yield* s.admit("Hi", { schema: { type: "array" } }).pipe(Effect.flip)
+
+      expect(failure).toMatchObject({ _tag: "Session.OutputSchemaError" })
+      expect(yield* s.messages).toEqual([])
+    })
+  })
 
   scenario("compacts when the provider cuts an oversized prompt to its window and replies with nothing", function* (s) {
     // Xiaomi MiMo answers an oversized prompt with HTTP 200, finish "length", no output, and a prompt count that fills

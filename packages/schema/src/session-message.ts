@@ -6,7 +6,7 @@ import { Content } from "./tool.js"
 import { Location } from "./location.js"
 import { Model } from "./model.js"
 import { Project } from "./project.js"
-import { Attachment, Prompt } from "./prompt.js"
+import { Attachment, Output, Prompt } from "./prompt.js"
 import { DateTimeUtcFromMillis, PositiveInt, RelativePath, statics } from "./schema.js"
 import { ascending } from "./identifier.js"
 import { Shell as ShellSchema } from "./shell.js"
@@ -81,6 +81,7 @@ export const User = Schema.Struct({
   files: Prompt.fields.files,
   agents: Prompt.fields.agents,
   skills: Prompt.fields.skills,
+  output: Output.pipe(optional),
   type: Schema.tag("user"),
 }).annotate({ identifier: "Session.Message.User" })
 

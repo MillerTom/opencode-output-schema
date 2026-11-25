@@ -457,6 +457,17 @@ const Root = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME
           Flag.withDescription("File to attach to the message"),
           Flag.atMost(100),
         ),
+        outputSchema: Flag.String("output-schema").pipe(
+          Flag.withDescription(
+            "JSON Schema file the final answer must match. Invalid answers are sent back for correction, and the validated JSON is printed",
+          ),
+          Flag.optional,
+        ),
+        outputRetries: Flag.Int("output-retries").pipe(
+          Flag.withSchema(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+          Flag.withDescription("Corrections allowed for an answer that fails validation (default: 2)"),
+          Flag.optional,
+        ),
         title: Flag.String("title").pipe(Flag.withDescription("Session title"), Flag.optional),
         archived: Flag.Boolean("archived").pipe(
           Flag.withDescription(

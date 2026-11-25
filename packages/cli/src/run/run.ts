@@ -1,10 +1,12 @@
 import { Service, type Endpoint } from "@opencode/client/effect/service"
-import { OpenCode, type SessionMessageAssistantTool } from "@opencode/client/promise"
+import { OpenCode, type JsonValue, type SessionMessageAssistantTool } from "@opencode/client/promise"
 import { FSUtil } from "@opencode/util/fs-util"
 import { noTimeoutFetch } from "@opencode/util/no-timeout-fetch"
+import { Option, Schema } from "effect"
 import { constants } from "node:fs"
 import { open } from "node:fs/promises"
 import path from "node:path"
+import { readFile } from "node:fs/promises"
 import { readStdin, readStdinIfReady } from "../util/io"
 import { ServerConnection } from "../services/server-connection"
 import { createWorktreeLocation, parseSessionTargetModel, resolveSessionTarget } from "../session-target"
@@ -25,6 +27,9 @@ export type RunCommandInput = {
   agent?: string
   format: "default" | "json"
   file: string[]
+  /** Path to a JSON Schema file the final answer must match. */
+  outputSchema?: string
+  outputRetries?: number
   title?: string
   archived?: boolean
   thinking?: boolean
@@ -37,6 +42,7 @@ type Prepared = {
   directory: string
   message: string
   files: FilePart[]
+  output?: { schema: Record<string, JsonValue>; retries?: number }
 }
 
 class RunTargetError extends Error {
@@ -72,8 +78,12 @@ async function run(input: RunCommandInput, signal: AbortSignal) {
       : await readStdin()
   const message = mergeInput(argument, piped)
   if (!message?.trim()) fail("You must provide a message")
+  if (input.outputRetries !== undefined && !input.outputSchema) fail("--output-retries requires --output-schema")
   const files = await Promise.all(input.file.map((file) => prepareFile(file, root)))
-  return execute(input, { directory, message, files }, input.server.endpoint, signal)
+  const output = input.outputSchema
+    ? { schema: await readOutputSchema(input.outputSchema, root), retries: input.outputRetries }
+    : undefined
+  return execute(input, { directory, message, files, output }, input.server.endpoint, signal)
 }
 
 async function execute(input: RunCommandInput, prepared: Prepared, endpoint: Endpoint, signal: AbortSignal) {
@@ -132,6 +142,7 @@ async function execute(input: RunCommandInput, prepared: Prepared, endpoint: End
     location: target.location,
     message: [prepared.message, ...prepared.files.flatMap((file) => ("text" in file ? [file.text] : []))].join("\n\n"),
     files: prepared.files.flatMap((file) => ("attachment" in file ? [file.attachment] : [])),
+    output: prepared.output,
     agent: target.agent,
     model: target.model,
     thinking: input.thinking ?? false,
@@ -166,6 +177,19 @@ export function parseRunModel(value?: string) {
     model: { providerID: ref.providerID, modelID: ref.id },
     variant: ref.variant,
   }
+}
+
+const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
+
+async function readOutputSchema(input: string, directory: string) {
+  const text = await readFile(path.resolve(directory, input), "utf8").catch(() =>
+    fail(`Output schema file not found: ${input}`),
+  )
+  const schema = Option.getOrUndefined(decodeJson(text))
+  if (schema === undefined) fail(`Output schema is not valid JSON: ${input}`)
+  if (typeof schema !== "object" || schema === null || Array.isArray(schema))
+    fail(`Output schema must be a JSON object: ${input}`)
+  return schema as Record<string, JsonValue>
 }
 
 async function prepareFile(input: string, directory: string): Promise<FilePart> {

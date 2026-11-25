@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { optional } from "./schema.js"
+import { NonNegativeInt, optional } from "./schema.js"
 import { statics } from "./schema.js"
 import { Skill } from "./skill.js"
 
@@ -94,6 +94,22 @@ export const SkillAttachment = Schema.Struct({
   text: Schema.String.pipe(optional),
   mention: PromptMention.pipe(optional),
 }).annotate({ identifier: "Prompt.SkillAttachment" })
+
+/** The tool the agent calls to return an answer requested through {@link Output}; its arguments are the answer. */
+export const OUTPUT_TOOL = "structured_output"
+
+/** Asks the harness to validate the agent's final answer against a JSON Schema, and to have the agent correct it. */
+export interface Output extends Schema.Schema.Type<typeof Output> {}
+export const Output = Schema.Struct({
+  schema: Schema.Record(Schema.String, Schema.Unknown).annotate({
+    description:
+      "A JSON Schema (draft-07 or 2020-12) the agent's final answer must satisfy. The agent returns it by calling the structured_output tool.",
+  }),
+  retries: NonNegativeInt.pipe(optional).annotate({
+    description:
+      "How many times the agent may correct an answer that is missing or fails validation before the turn fails. Defaults to 2.",
+  }),
+}).annotate({ identifier: "Prompt.Output" })
 
 export interface Prompt extends Schema.Schema.Type<typeof Prompt> {}
 export const Prompt = Schema.Struct({

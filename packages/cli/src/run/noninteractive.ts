@@ -12,6 +12,7 @@ import {
   type SessionMessageIdle,
   type SessionMessageInfo,
 } from "@opencode/client/promise"
+import { OUTPUT_TOOL } from "@opencode/schema/prompt"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { EOL } from "node:os"
 import { toolOutputText, type MiniToolPart } from "@opencode/tui/mini/tool"
@@ -23,6 +24,8 @@ type Input = {
   location: LocationRef
   message: string
   files: { uri: string; name: string }[]
+  /** Asks the harness to validate the final answer against this JSON Schema. */
+  output?: { schema: Record<string, JsonValue>; retries?: number }
   agent?: string
   model?: ModelRef
   thinking: boolean
@@ -219,6 +222,7 @@ export async function runNonInteractivePrompt(input: Input) {
       id: messageID,
       text: input.message,
       files: input.files,
+      output: input.output,
       delivery: "steer",
     })
     await state.admission
@@ -302,7 +306,10 @@ export async function runNonInteractivePrompt(input: Input) {
     state.phase = "settled"
     await render.reconcile(settled.messages)
     const error = finalError(settled, state)
-    if (!error) return
+    if (!error) {
+      if (input.output) render.output(settled.messages)
+      return
+    }
     process.exitCode = 1
     render.error(error)
   } finally {
@@ -468,6 +475,21 @@ function renderer(input: Input) {
   return {
     error: (error: RunError) => {
       if (!emit("error", Date.now(), { error })) UI.error(error.message)
+    },
+
+    /** Prints the answer the harness accepted for this prompt, which is the last one the agent submitted. */
+    output: (messages: SessionMessageInfo[]) => {
+      const accepted = messages
+        .flatMap((message) => (message.type === "assistant" ? message.content : []))
+        .findLast((part) => part.type === "tool" && part.name === OUTPUT_TOOL && part.state.status === "completed")
+      if (accepted?.type !== "tool") {
+        process.exitCode = 1
+        const error = { type: "structured-output", message: "The run finished without an accepted answer" }
+        if (!emit("error", Date.now(), { error })) UI.error(error.message)
+        return
+      }
+      if (emit("output", Date.now(), { output: accepted.state.input })) return
+      process.stdout.write(JSON.stringify(accepted.state.input, null, 2) + EOL)
     },
 
     waiting: (jobs: Job[]) => {

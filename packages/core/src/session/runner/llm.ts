@@ -1,6 +1,6 @@
 export * as SessionRunnerLLM from "./llm.js"
 
-import { Message } from "@opencode/ai/effect"
+import { Message, SystemPart } from "@opencode/ai/effect"
 import { and, desc, eq, inArray, sql } from "drizzle-orm"
 import { Cause, Effect, Exit, FiberMap, Layer } from "effect"
 import { Database } from "../../database/database.js"
@@ -23,6 +23,7 @@ import { SessionModelTransport } from "../model-transport.js"
 import { SessionMessage } from "../message.js"
 import { SessionSchema } from "../schema.js"
 import { SessionStore } from "../store.js"
+import { SessionStructuredOutput } from "../structured-output.js"
 import { SessionMessageTable } from "../sql.js"
 import { SessionTitle } from "../title.js"
 import { toSessionError } from "../to-session-error.js"
@@ -264,10 +265,16 @@ const layer = Layer.effect(
         }
         yield* compaction.precompute(Effect.succeed(loaded), estimate)
         const stepLimitReached = loaded.agent.info.steps !== undefined && step >= loaded.agent.info.steps
+        // A turn that asked for structured output gets one extra tool for this request only, shaped by its schema.
+        const structured = yield* SessionStructuredOutput.progress(db, sessionID)
+        const tools =
+          structured.status === "pending"
+            ? SessionStructuredOutput.attach(loaded.tools, structured.output)
+            : loaded.tools
         const transcript = SessionModelRequest.baseTranscript({
           agent: loaded.agent.info,
           model: loaded.model,
-          tools: loaded.tools,
+          tools,
           initial: loaded.initial,
           messages: loaded.messages,
         })
@@ -276,8 +283,11 @@ const layer = Layer.effect(
             session: loaded.session,
             agent: loaded.agent.id,
             model: loaded.model,
-            tools: loaded.tools,
-            system: transcript.system,
+            tools,
+            system:
+              structured.status === "pending"
+                ? [...transcript.system, SystemPart.make(SessionStructuredOutput.INSTRUCTIONS)]
+                : transcript.system,
             messages: stepLimitReached
               ? [...transcript.messages, Message.assistant(MAX_STEPS_PROMPT)]
               : transcript.messages,
@@ -335,6 +345,30 @@ const layer = Layer.effect(
         retryAttempt = undefined
         const completed = yield* SessionStep.Outcome.$match(outcome, {
           Completed: Effect.fnUntraced(function* (outcome) {
+            const answer = yield* SessionStructuredOutput.progress(db, sessionID)
+            if (answer.status === "pending") {
+              const retries = SessionStructuredOutput.retries(answer.output)
+              // Ending the turn without calling the tool costs one more correction, which the reminder records.
+              const used = answer.corrections + (outcome.needsContinuation ? 0 : 1)
+              if (used > retries)
+                return yield* new StepFailedError({
+                  error: {
+                    type: "structured-output",
+                    message: `The agent did not return output matching the schema after ${retries} ${retries === 1 ? "correction" : "corrections"}`,
+                  },
+                })
+              if (!outcome.needsContinuation) {
+                yield* bus.publish(SessionEvent.Synthetic, {
+                  sessionID,
+                  text: SessionStructuredOutput.REMINDER,
+                  metadata: SessionStructuredOutput.REMINDER_METADATA,
+                })
+                assistantMessageID = SessionMessage.ID.create()
+                return undefined
+              }
+            }
+            // An accepted answer ends the turn, even when the model also called other tools in the same step.
+            if (answer.status === "accepted") return false
             // The Session is about to go idle, which leaves the background summary time to finish.
             if (!outcome.needsContinuation)
               yield* compaction.precompute(

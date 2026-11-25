@@ -77,6 +77,10 @@ export class AttachmentError extends Schema.TaggedError<AttachmentError>()("Sess
   message: Schema.String,
 }) {}
 
+export class OutputSchemaError extends Schema.TaggedError<OutputSchemaError>()("Session.OutputSchemaError", {
+  message: Schema.String,
+}) {}
+
 export class CompactionConflictError extends Schema.TaggedError<CompactionConflictError>()(
   "Session.CompactionConflictError",
   {
